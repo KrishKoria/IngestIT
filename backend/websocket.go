@@ -24,14 +24,15 @@ var upgrader = websocket.Upgrader{
 // WebSocketHandler handles WebSocket connections
 func WebSocketHandler(conn driver.Conn) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		log.Println("Upgrading connection to WebSocket...")
 		ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
-			log.Printf("Failed to set websocket upgrade: %v", err)
+			log.Printf("Failed to set WebSocket upgrade: %v", err)
 			return
 		}
 		defer ws.Close()
+		log.Println("WebSocket connection established.")
 
-		// Create client connection
 		client := &Client{
 			conn:       ws,
 			dbConn:     conn,
@@ -40,7 +41,6 @@ func WebSocketHandler(conn driver.Conn) gin.HandlerFunc {
 			cancelFunc: nil,
 		}
 
-		// Start client routines
 		go client.writePump()
 		client.readPump()
 	}
@@ -67,26 +67,19 @@ type Message struct {
 // readPump pumps messages from the WebSocket connection to the hub
 func (c *Client) readPump() {
 	defer func() {
+		log.Println("Closing WebSocket readPump...")
 		c.conn.Close()
 	}()
 
-	c.conn.SetReadLimit(512 * 1024) // 512KB max message size
-	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		return nil
-	})
-
+	log.Println("Starting WebSocket readPump...")
 	for {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("error: %v", err)
-			}
+			log.Printf("Error reading message: %v", err)
 			break
 		}
+		log.Printf("Received message: %s", string(message))
 
-		// Process the message
 		var msg Message
 		if err := json.Unmarshal(message, &msg); err != nil {
 			log.Printf("Error unmarshaling message: %v", err)
@@ -94,28 +87,23 @@ func (c *Client) readPump() {
 			continue
 		}
 
-		// Handle different message types
 		switch msg.Type {
 		case "query":
-			// Cancel any existing query
+			log.Printf("Processing query: %s", msg.Query)
 			if c.cancelFunc != nil {
 				c.cancelFunc()
 			}
-
-			// Create a new context with cancellation
 			ctx, cancel := context.WithCancel(c.ctx)
 			c.cancelFunc = cancel
-
-			// Execute the query in a goroutine
 			go c.executeQuery(ctx, msg.Query, msg.StreamID)
-
 		case "cancelQuery":
+			log.Println("Canceling current query...")
 			if c.cancelFunc != nil {
 				c.cancelFunc()
 				c.cancelFunc = nil
 			}
-
 		default:
+			log.Printf("Unknown message type: %s", msg.Type)
 			c.sendError("Unknown message type")
 		}
 	}
@@ -123,8 +111,10 @@ func (c *Client) readPump() {
 
 // writePump pumps messages from the hub to the WebSocket connection
 func (c *Client) writePump() {
+	log.Println("Starting WebSocket writePump...")
 	ticker := time.NewTicker(54 * time.Second)
 	defer func() {
+		log.Println("Closing WebSocket writePump...")
 		ticker.Stop()
 		c.conn.Close()
 	}()
@@ -132,25 +122,26 @@ func (c *Client) writePump() {
 	for {
 		select {
 		case message, ok := <-c.send:
-			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if !ok {
-				// The hub closed the channel
+				log.Println("Send channel closed, sending close message...")
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-
+			log.Printf("Sending message: %s", string(message))
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
+				log.Printf("Error getting writer: %v", err)
 				return
 			}
 			w.Write(message)
-
 			if err := w.Close(); err != nil {
+				log.Printf("Error closing writer: %v", err)
 				return
 			}
 		case <-ticker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			log.Println("Sending ping message...")
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("Error sending ping: %v", err)
 				return
 			}
 		}
@@ -169,11 +160,19 @@ func (c *Client) executeQuery(ctx context.Context, query string, streamID string
 	columnNames := rows.Columns()
 	numColumns := len(columnNames)
 
+	metadata, err := json.Marshal(map[string]interface{}{
+		"columns": columnNames,
+	})
+	if err != nil {
+		c.sendError(fmt.Sprintf("Metadata marshal error: %v", err))
+		return
+	}
+
 	// Send column metadata
 	metadataMsg := Message{
 		Type:     "metadata",
 		StreamID: streamID,
-		Data:     json.RawMessage(fmt.Sprintf(`{"columns":%q}`, columnNames)),
+		Data:     json.RawMessage(metadata),
 	}
 	c.sendMessage(metadataMsg)
 
@@ -189,7 +188,13 @@ func (c *Client) executeQuery(ctx context.Context, query string, streamID string
 			// Use appropriate type for each column - especially for numeric types
 			columnTypes := rows.ColumnTypes()
 			switch columnTypes[i].DatabaseTypeName() {
-			case "UInt8", "UInt16", "UInt32":
+			case "UInt8":
+				var val uint8
+				rowPtrs[i] = &val
+			case "UInt16":
+				var val uint16
+				rowPtrs[i] = &val
+			case "UInt32":
 				var val uint32
 				rowPtrs[i] = &val
 			case "UInt64":
@@ -207,14 +212,14 @@ func (c *Client) executeQuery(ctx context.Context, query string, streamID string
 			case "Float64":
 				var val float64
 				rowPtrs[i] = &val
-			case "String", "FixedString":
+			case "String", "FixedString", "Nullable(String)":
 				var val string
 				rowPtrs[i] = &val
 			case "Date", "DateTime":
 				var val time.Time
 				rowPtrs[i] = &val
 			default:
-				var val interface{}
+				var val string
 				rowPtrs[i] = &val
 			}
 		}

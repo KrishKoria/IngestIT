@@ -166,7 +166,13 @@ func processQueryResults(rows driver.Rows) (map[string]interface{}, error) {
 		for i := 0; i < numColumns; i++ {
 			columnTypes := rows.ColumnTypes()
 			switch columnTypes[i].DatabaseTypeName() {
-			case "UInt8", "UInt16", "UInt32":
+			case "UInt8":
+				var val uint8
+				rowPtrs[i] = &val
+			case "UInt16":
+				var val uint16
+				rowPtrs[i] = &val
+			case "UInt32":
 				var val uint32
 				rowPtrs[i] = &val
 			case "UInt64":
@@ -184,14 +190,14 @@ func processQueryResults(rows driver.Rows) (map[string]interface{}, error) {
 			case "Float64":
 				var val float64
 				rowPtrs[i] = &val
-			case "String", "FixedString":
+			case "String", "FixedString", "Nullable(String)":
 				var val string
 				rowPtrs[i] = &val
 			case "Date", "DateTime":
 				var val time.Time
 				rowPtrs[i] = &val
 			default:
-				var val interface{}
+				var val string
 				rowPtrs[i] = &val
 			}
 		}

@@ -1,4 +1,3 @@
-// frontend/src/components/DataQueryComponent.jsx
 import React, { useState, useEffect, useRef } from "react";
 import websocketService from "../services/websocketservice";
 
@@ -10,6 +9,8 @@ const DataQueryComponent = () => {
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const streamIdRef = useRef(null);
+  const [isLoadingData, setIsLoadingData] = useState(false);
+  const timeoutRef = useRef(null);
 
   useEffect(() => {
     // Connect to WebSocket when component mounts
@@ -32,6 +33,19 @@ const DataQueryComponent = () => {
     setError("");
     setStatus("Executing query...");
     setIsStreaming(true);
+    setIsLoadingData(true);
+
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+
+    timeoutRef.current = setTimeout(() => {
+      if (isStreaming && rows.length === 0) {
+        setError(
+          "Query appears to be stalled. The data might be too large or there might be a connection issue."
+        );
+      }
+    }, 10000);
 
     try {
       // Generate a new stream ID
@@ -45,17 +59,21 @@ const DataQueryComponent = () => {
             const metadata =
               typeof msg.data === "string" ? JSON.parse(msg.data) : msg.data;
             setColumns(metadata.columns);
+            console.log("Metadata received:", metadata);
           } catch (err) {
             console.error("Error parsing metadata:", err);
           }
         },
         data: (msg) => {
           try {
+            console.log("Data row received:", msg);
+            setIsLoadingData(false);
             const rowData =
               typeof msg.data === "string" ? JSON.parse(msg.data) : msg.data;
             setRows((prevRows) => [...prevRows, rowData]);
           } catch (err) {
-            console.error("Error parsing row data:", err);
+            console.error("Error parsing row data:", err, msg);
+            setError(`Error parsing row data: ${err.message}`);
           }
         },
         complete: (msg) => {
@@ -82,6 +100,7 @@ const DataQueryComponent = () => {
       // Execute the query
       await websocketService.executeQuery(query, streamId);
     } catch (err) {
+      setIsLoadingData(false);
       setError(`Failed to execute query: ${err.message}`);
       setStatus("Query failed");
       setIsStreaming(false);
@@ -125,6 +144,12 @@ const DataQueryComponent = () => {
         <div className="query-results">
           <h3>Results {isStreaming && <span>(Streaming...)</span>}</h3>
           <div className="results-table-container">
+            {isLoadingData && rows.length === 0 && (
+              <div className="loading-indicator">
+                Waiting for data... (This might take a moment for large
+                datasets)
+              </div>
+            )}
             <table className="results-table">
               <thead>
                 <tr>
