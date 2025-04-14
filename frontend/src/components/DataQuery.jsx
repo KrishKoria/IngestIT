@@ -1,19 +1,36 @@
 import React, { useState, useEffect, useRef } from "react";
+import websocketService from "../services/websocketService.js";
+import SourceTargetSelector from "./selectors/SourceTargetSelectors";
+import ConnectionParameters from "./selectors/ConnectionParameters";
+import TableList from "./misc/TableList";
+import ColumnSelector from "./selectors/ColumnSelector";
+import ActionButtons from "./misc/ActionButtons";
 import QueryInput from "./query/QueryInput";
+import StatusDisplay from "./misc/StatusDisplay";
+import ResultDisplay from "./misc/ResultDisplay";
 import QueryControls from "./query/QueryControls";
 import QueryStatus from "./query/QueryStatus";
 import QueryResults from "./query/QueryResults";
-import websocketService from "../services/websocketService";
-
 const DataQueryComponent = () => {
+  // State for query execution
   const [query, setQuery] = useState("SELECT * FROM system.tables LIMIT 10");
   const [isStreaming, setIsStreaming] = useState(false);
   const [columns, setColumns] = useState([]);
   const [rows, setRows] = useState([]);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
-  const streamIdRef = useRef(null);
   const [isLoadingData, setIsLoadingData] = useState(false);
+
+  // State for new UI requirements
+  const [sourceType, setSourceType] = useState("clickhouse");
+  const [targetType, setTargetType] = useState("clickhouse");
+  const [parameters, setParameters] = useState({});
+  const [tables, setTables] = useState([]);
+  const [selectedTable, setSelectedTable] = useState("");
+  const [selectedColumns, setSelectedColumns] = useState([]);
+  const [result, setResult] = useState("");
+
+  const streamIdRef = useRef(null);
   const timeoutRef = useRef(null);
 
   useEffect(() => {
@@ -111,9 +128,84 @@ const DataQueryComponent = () => {
     }
   };
 
+  const handleConnect = () => {
+    // Logic to connect to the source/target
+    setStatus("Connecting...");
+    // Simulate fetching tables
+    setTimeout(() => {
+      setTables(["table1", "table2", "table3"]);
+      setStatus("Connected");
+    }, 1000);
+  };
+
+  const handleLoadColumns = () => {
+    // Logic to load columns for the selected table
+    if (selectedTable) {
+      setStatus("Loading columns...");
+      // Simulate fetching columns
+      setTimeout(() => {
+        setColumns(["column1", "column2", "column3"]);
+        setStatus("Columns loaded");
+      }, 1000);
+    } else {
+      setError("Please select a table first.");
+    }
+  };
+
+  const handlePreview = () => {
+    // Logic to preview data
+    setStatus("Previewing data...");
+    // Simulate preview data
+    setTimeout(() => {
+      setRows([
+        ["value1", "value2", "value3"],
+        ["value4", "value5", "value6"],
+      ]);
+      setStatus("Preview complete");
+    }, 1000);
+  };
+
+  const handleStartIngestion = () => {
+    // Logic to start ingestion
+    setStatus("Starting ingestion...");
+    // Simulate ingestion process
+    setTimeout(() => {
+      setResult("Ingestion completed successfully. 100 records ingested.");
+      setStatus("Ingestion complete");
+    }, 2000);
+  };
+
   return (
-    <div className="query-container">
-      <h2>ClickHouse Query</h2>
+    <div className="data-query-container">
+      <h2>Data Query and Ingestion</h2>
+      <SourceTargetSelector
+        sourceType={sourceType}
+        setSourceType={setSourceType}
+        targetType={targetType}
+        setTargetType={setTargetType}
+      />
+      <ConnectionParameters
+        parameters={parameters}
+        setParameters={setParameters}
+      />
+      <TableList
+        tables={tables}
+        selectedTable={selectedTable}
+        setSelectedTable={setSelectedTable}
+      />
+      <ColumnSelector
+        columns={columns}
+        selectedColumns={selectedColumns}
+        setSelectedColumns={setSelectedColumns}
+      />
+      <ActionButtons
+        onConnect={handleConnect}
+        onLoadColumns={handleLoadColumns}
+        onPreview={handlePreview}
+        onStartIngestion={handleStartIngestion}
+      />
+      <StatusDisplay status={status} error={error} />
+      <ResultDisplay result={result} />
       <QueryInput query={query} setQuery={setQuery} isStreaming={isStreaming} />
       <QueryControls
         isStreaming={isStreaming}
