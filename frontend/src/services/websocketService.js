@@ -11,7 +11,7 @@ class WebSocketService {
   }
 
   // Connect to the WebSocket server
-  connect(url = "ws://localhost:8080/ws") {
+  connect(url = `ws://${window.location.hostname}:8080/ws`) {
     if (this.connectionPromise) {
       return this.connectionPromise;
     }

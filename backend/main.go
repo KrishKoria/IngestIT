@@ -4,144 +4,151 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	_ "github.com/gorilla/websocket"
-	"github.com/joho/godotenv"
+	"github.com/gorilla/websocket"
 )
 
 type ClickHouseConfig struct {
-	Host     string
-	Port     int
-	Database string
-	User     string
-	JWTToken string
-}
-
-func loadConfig() (*ClickHouseConfig, error) {
-	// Load environment variables from .env file
-	if err := godotenv.Load(); err != nil {
-		fmt.Println("Warning: No .env file found")
-	}
-
-	config := &ClickHouseConfig{
-		Host:     os.Getenv("CLICKHOUSE_HOST"),
-		Port:     getEnvAsInt("CLICKHOUSE_PORT", 0),
-		Database: os.Getenv("CLICKHOUSE_DATABASE"),
-		User:     os.Getenv("CLICKHOUSE_USER"),
-		JWTToken: os.Getenv("CLICKHOUSE_JWT_TOKEN"),
-	}
-
-	// Validate required fields
-	if config.Host == "" || config.Port == 0 || config.Database == "" || config.User == "" || config.JWTToken == "" {
-		return nil, fmt.Errorf("missing required ClickHouse configuration")
-	}
-
-	return config, nil
+    Host     string `json:"host"`
+    Port     int    `json:"port"`
+    Database string `json:"database"`
+    User     string `json:"username"`
+    JWTToken string `json:"password"`
 }
 
 func main() {
-	// Load configuration
-	config, err := loadConfig()
-	if err != nil {
-		fmt.Printf("Error loading configuration: %s\n", err)
-		os.Exit(1)
+
+    // Initialize Gin router with CORS middleware
+    router := gin.Default()
+    router.Use(cors.Default())
+
+	var upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true 
+		},
 	}
 
-	// Connect to ClickHouse
-	conn, err := connectToClickHouse(config)
-	if err != nil {
-		fmt.Printf("Error connecting to ClickHouse: %s\n", err)
-		os.Exit(1)
-	}
-	defer func(conn driver.Conn) {
-		err := conn.Close()
+	router.GET("/ws", func(c *gin.Context) {
+		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
-			fmt.Println("Failed to close connection")
-		}
-	}(conn)
-
-	fmt.Println("Successfully connected to ClickHouse")
-
-	// Initialize Gin router with CORS middleware
-	router := gin.Default()
-	router.Use(corsMiddleware())
-
-	// Health check endpoint
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "healthy",
-			"message": "Server is running and connected to ClickHouse",
-		})
-	})
-
-	// WebSocket endpoint for real-time data streaming
-	router.GET("/ws", WebSocketHandler(conn))
-
-	// API endpoint for executing queries (non-streaming)
-	router.POST("/api/query", func(c *gin.Context) {
-		var queryRequest struct {
-			Query string `json:"query" binding:"required"`
-		}
-
-		if err := c.ShouldBindJSON(&queryRequest); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+			fmt.Println("Failed to upgrade to WebSocket:", err)
 			return
 		}
+		defer conn.Close()
+	
+		for {
+			// Read message from client
+			messageType, message, err := conn.ReadMessage()
+			if err != nil {
+				fmt.Println("Error reading message:", err)
+				break
+			}
+	
+			// Echo message back to client
+			if err := conn.WriteMessage(messageType, message); err != nil {
+				fmt.Println("Error writing message:", err)
+				break
+			}
+		}
+	})
 
-		// Execute query with context
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+    // Health check endpoint
+    router.GET("/health", func(c *gin.Context) {
+        c.JSON(http.StatusOK, gin.H{
+            "status":  "healthy",
+            "message": "Server is running",
+        })
+    })
 
-		rows, err := conn.Query(ctx, queryRequest.Query)
+    router.POST("/api/connect", func(c *gin.Context) {
+		var config ClickHouseConfig
+		if err := c.ShouldBindJSON(&config); err != nil {
+			fmt.Printf("Invalid connection parameters: %v\n", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid connection parameters"})
+			return
+		}
+	
+		fmt.Printf("Received connection parameters: %+v\n", config)
+	
+		// Attempt to connect to ClickHouse with the provided parameters
+		conn, err := connectToClickHouse(&config)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Query execution failed: %v", err)})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Connection failed: %v", err)})
+			return
+		}
+		defer conn.Close()
+	
+		// Fetch available tables as a test of the connection
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+	
+		rows, err := conn.Query(ctx, "SHOW TABLES")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to fetch tables: %v", err)})
 			return
 		}
 		defer rows.Close()
-
-		// Process results
-		results, err := processQueryResults(rows)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Processing results failed: %v", err)})
-			return
+	
+		var tables []string
+		for rows.Next() {
+			var tableName string
+			if err := rows.Scan(&tableName); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to read table name: %v", err)})
+				return
+			}
+			tables = append(tables, tableName)
 		}
-
-		c.JSON(http.StatusOK, results)
+	
+		c.JSON(http.StatusOK, gin.H{"tables": tables})
 	})
 
-	// File ingestion endpoint
-	router.POST("/api/ingest", func(c *gin.Context) {
-		// TODO: Implement file ingestion logic
-		c.JSON(http.StatusNotImplemented, gin.H{"message": "File ingestion not yet implemented"})
-	})
+    // API endpoint for executing queries (non-streaming)
+    router.POST("/api/query", func(c *gin.Context) {
+        var queryRequest struct {
+            Query    string          `json:"query" binding:"required"`
+            Database ClickHouseConfig `json:"database"`
+        }
 
-	// Start the HTTP server
-	port := getEnvAsString("PORT", "8080")
-	fmt.Printf("Server starting on port %s...\n", port)
-	err = router.Run(":" + port)
-	if err != nil {
-		fmt.Printf("Error running router: %s\n", err)
-	}
-}
+        if err := c.ShouldBindJSON(&queryRequest); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+            return
+        }
 
-// CORS middleware
-func corsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+        // Connect to ClickHouse with provided parameters
+        conn, err := connectToClickHouse(&queryRequest.Database)
+        if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Connection failed: %v", err)})
+            return
+        }
+        defer conn.Close()
 
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
+        // Execute query with context
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
 
-		c.Next()
-	}
+        rows, err := conn.Query(ctx, queryRequest.Query)
+        if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Query execution failed: %v", err)})
+            return
+        }
+        defer rows.Close()
+
+        // Process results
+        results, err := processQueryResults(rows)
+        if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Processing results failed: %v", err)})
+            return
+        }
+
+        c.JSON(http.StatusOK, results)
+    })
+    if err := router.Run(":8080" ); err != nil {
+        fmt.Printf("Error running router: %s\n", err)
+    }
 }
 
 // processQueryResults converts ClickHouse query results to JSON-friendly format
@@ -246,21 +253,3 @@ func processQueryResults(rows driver.Rows) (map[string]interface{}, error) {
 	return result, nil
 }
 
-func getEnvAsInt(key string, defaultValue int) int {
-	if value, exists := os.LookupEnv(key); exists {
-		var intValue int
-		_, err := fmt.Sscanf(value, "%d", &intValue)
-		if err != nil {
-			return defaultValue
-		}
-		return intValue
-	}
-	return defaultValue
-}
-
-func getEnvAsString(key, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return defaultValue
-}
