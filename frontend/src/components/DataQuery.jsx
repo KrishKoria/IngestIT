@@ -5,7 +5,6 @@ import ConnectionParameters from "./selectors/ConnectionParameters";
 import TableList from "./misc/TableList";
 import ColumnSelector from "./selectors/ColumnSelector";
 import ActionButtons from "./misc/ActionButtons";
-import QueryInput from "./query/QueryInput";
 import StatusDisplay from "./misc/StatusDisplay";
 import ResultDisplay from "./misc/ResultDisplay";
 import QueryControls from "./query/QueryControls";
@@ -14,13 +13,14 @@ import QueryResults from "./query/QueryResults";
 
 const DataQueryComponent = () => {
   // State for query execution
-  const [query, setQuery] = useState("SELECT * FROM system.tables LIMIT 10");
   const [isStreaming, setIsStreaming] = useState(false);
   const [columns, setColumns] = useState([]);
   const [rows, setRows] = useState([]);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [isLoadingData, setIsLoadingData] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage] = useState(100);
 
   // State for new UI requirements
   const [sourceType, setSourceType] = useState("clickhouse");
@@ -32,15 +32,12 @@ const DataQueryComponent = () => {
   const [result, setResult] = useState("");
 
   const streamIdRef = useRef(null);
-  const timeoutRef = useRef(null);
 
   const handleConnect = async () => {
     setStatus("Connecting...");
     setError("");
 
     try {
-      console.log("Connecting with parameters:", parameters);
-
       const response = await fetch("http://localhost:8080/api/connect", {
         method: "POST",
         headers: {
@@ -48,7 +45,7 @@ const DataQueryComponent = () => {
         },
         body: JSON.stringify({
           host: parameters.host,
-          port: parseInt(parameters.port, 10), // Ensure port is sent as an integer
+          port: parseInt(parameters.port, 10),
           database: parameters.database,
           username: parameters.username,
           password: parameters.password,
@@ -63,7 +60,7 @@ const DataQueryComponent = () => {
       }
 
       const data = await response.json();
-      setTables(data.tables); // Assume backend returns a list of tables
+      setTables(data.tables);
       setStatus("Connected");
     } catch (err) {
       setError(`Connection error: ${err.message}`);
@@ -72,6 +69,16 @@ const DataQueryComponent = () => {
   };
 
   const handleExecuteQuery = async () => {
+    if (!selectedTable) {
+      setError("Please select a table first.");
+      return;
+    }
+
+    if (selectedColumns.length === 0) {
+      setError("Please select at least one column.");
+      return;
+    }
+
     setColumns([]);
     setRows([]);
     setError("");
@@ -79,19 +86,10 @@ const DataQueryComponent = () => {
     setIsStreaming(true);
     setIsLoadingData(true);
 
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
-
-    timeoutRef.current = setTimeout(() => {
-      if (isStreaming && rows.length === 0) {
-        setError(
-          "Query appears to be stalled. The data might be too large or there might be a connection issue."
-        );
-      }
-    }, 10000);
-
     try {
+      console.log("Ensuring WebSocket connection...");
+      await websocketService.ensureConnected();
+
       const streamId = crypto.randomUUID();
       streamIdRef.current = streamId;
 
@@ -137,12 +135,29 @@ const DataQueryComponent = () => {
         },
       });
 
+      const offset = (currentPage - 1) * rowsPerPage;
+      const query = `SELECT ${selectedColumns.join(
+        ", "
+      )} FROM ${selectedTable} LIMIT ${rowsPerPage} OFFSET ${offset}`;
+      console.log("Executing query:", query);
       await websocketService.executeQuery(query, streamId);
     } catch (err) {
       setIsLoadingData(false);
       setError(`Failed to execute query: ${err.message}`);
       setStatus("Query failed");
       setIsStreaming(false);
+    }
+  };
+
+  const handleNextPage = () => {
+    setCurrentPage((prev) => prev + 1);
+    handleExecuteQuery();
+  };
+
+  const handlePreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage((prev) => prev - 1);
+      handleExecuteQuery();
     }
   };
 
@@ -154,15 +169,44 @@ const DataQueryComponent = () => {
     }
   };
 
-  const handleLoadColumns = () => {
-    if (selectedTable) {
-      setStatus("Loading columns...");
-      setTimeout(() => {
-        setColumns(["column1", "column2", "column3"]);
-        setStatus("Columns loaded");
-      }, 1000);
-    } else {
+  const handleLoadColumns = async () => {
+    if (!selectedTable) {
       setError("Please select a table first.");
+      return;
+    }
+
+    setStatus("Loading columns...");
+    setError("");
+
+    try {
+      const response = await fetch("http://localhost:8080/api/columns", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          table: selectedTable,
+          database: parameters.database,
+          host: parameters.host,
+          port: parseInt(parameters.port, 10),
+          username: parameters.username,
+          password: parameters.password,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        setError(`Failed to load columns: ${errorData.error}`);
+        setStatus("Failed to load columns");
+        return;
+      }
+
+      const data = await response.json();
+      setColumns(data.columns);
+      setStatus("Columns loaded");
+    } catch (err) {
+      setError(`Error loading columns: ${err.message}`);
+      setStatus("Failed to load columns");
     }
   };
 
@@ -208,6 +252,13 @@ const DataQueryComponent = () => {
         selectedColumns={selectedColumns}
         setSelectedColumns={setSelectedColumns}
       />
+      <div className="pagination-controls">
+        <button onClick={handlePreviousPage} disabled={currentPage === 1}>
+          Previous
+        </button>
+        <span>Page {currentPage}</span>
+        <button onClick={handleNextPage}>Next</button>
+      </div>
       <ActionButtons
         onConnect={handleConnect}
         onLoadColumns={handleLoadColumns}
@@ -216,7 +267,6 @@ const DataQueryComponent = () => {
       />
       <StatusDisplay status={status} error={error} />
       <ResultDisplay result={result} />
-      <QueryInput query={query} setQuery={setQuery} isStreaming={isStreaming} />
       <QueryControls
         isStreaming={isStreaming}
         onExecute={handleExecuteQuery}

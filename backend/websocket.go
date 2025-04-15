@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -17,33 +18,32 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all connections (you might want to restrict this in production)
+		return true 
 	},
 }
 
-// WebSocketHandler handles WebSocket connections
 func WebSocketHandler(conn driver.Conn) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		log.Println("Upgrading connection to WebSocket...")
-		ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-		if err != nil {
-			log.Printf("Failed to set WebSocket upgrade: %v", err)
-			return
-		}
-		defer ws.Close()
-		log.Println("WebSocket connection established.")
+    return func(c *gin.Context) {
+        log.Println("Upgrading connection to WebSocket...")
+        ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+        if err != nil {
+            log.Printf("Failed to set WebSocket upgrade: %v", err)
+            return
+        }
+        defer ws.Close()
+        log.Println("WebSocket connection established.")
 
-		client := &Client{
-			conn:       ws,
-			dbConn:     conn,
-			send:       make(chan []byte, 256),
-			ctx:        c.Request.Context(),
-			cancelFunc: nil,
-		}
+        client := &Client{
+            conn:       ws,
+            dbConn:     conn,
+            send:       make(chan []byte, 256),
+            ctx:        c.Request.Context(),
+            cancelFunc: nil,
+        }
 
-		go client.writePump()
-		client.readPump()
-	}
+        go client.writePump()
+        client.readPump()
+    }
 }
 
 // Client represents a WebSocket client
@@ -64,51 +64,49 @@ type Message struct {
 	StreamID string          `json:"streamId,omitempty"`
 }
 
-// readPump pumps messages from the WebSocket connection to the hub
 func (c *Client) readPump() {
-	defer func() {
-		log.Println("Closing WebSocket readPump...")
-		c.conn.Close()
-	}()
+    defer func() {
+        log.Println("Closing WebSocket readPump...")
+        c.conn.Close()
+    }()
 
-	log.Println("Starting WebSocket readPump...")
-	for {
-		_, message, err := c.conn.ReadMessage()
-		if err != nil {
-			log.Printf("Error reading message: %v", err)
-			break
-		}
-		log.Printf("Received message: %s", string(message))
+    log.Println("Starting WebSocket readPump...")
+    for {
+        _, message, err := c.conn.ReadMessage()
+        if err != nil {
+            log.Printf("Error reading message: %v", err)
+            break
+        }
+        log.Printf("Received message: %s", string(message))
 
-		var msg Message
-		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Printf("Error unmarshaling message: %v", err)
-			c.sendError("Invalid message format")
-			continue
-		}
+        var msg Message
+        if err := json.Unmarshal(message, &msg); err != nil {
+            log.Printf("Error unmarshaling message: %v", err)
+            c.sendError("Invalid message format")
+            continue
+        }
 
-		switch msg.Type {
-		case "query":
-			log.Printf("Processing query: %s", msg.Query)
-			if c.cancelFunc != nil {
-				c.cancelFunc()
-			}
-			ctx, cancel := context.WithCancel(c.ctx)
-			c.cancelFunc = cancel
-			go c.executeQuery(ctx, msg.Query, msg.StreamID)
-		case "cancelQuery":
-			log.Println("Canceling current query...")
-			if c.cancelFunc != nil {
-				c.cancelFunc()
-				c.cancelFunc = nil
-			}
-		default:
-			log.Printf("Unknown message type: %s", msg.Type)
-			c.sendError("Unknown message type")
-		}
-	}
+        switch msg.Type {
+        case "query":
+            log.Printf("Processing query: %s", msg.Query)
+            if c.cancelFunc != nil {
+                c.cancelFunc()
+            }
+            ctx, cancel := context.WithCancel(c.ctx)
+            c.cancelFunc = cancel
+            go c.executeQuery(ctx, msg.Query, msg.StreamID)
+        case "cancelQuery":
+            log.Println("Canceling current query...")
+            if c.cancelFunc != nil {
+                c.cancelFunc()
+                c.cancelFunc = nil
+            }
+        default:
+            log.Printf("Unknown message type: %s", msg.Type)
+            c.sendError("Unknown message type")
+        }
+    }
 }
-
 // writePump pumps messages from the hub to the WebSocket connection
 func (c *Client) writePump() {
 	log.Println("Starting WebSocket writePump...")

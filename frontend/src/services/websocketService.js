@@ -10,7 +10,6 @@ class WebSocketService {
     this.reconnectInterval = 3000; // 3 seconds
   }
 
-  // Connect to the WebSocket server
   connect(url = `ws://${window.location.hostname}:8080/ws`) {
     if (this.connectionPromise) {
       return this.connectionPromise;
@@ -73,7 +72,6 @@ class WebSocketService {
     return this.connect();
   }
 
-  // Send a message to the server
   async send(message) {
     await this.ensureConnected();
 
@@ -81,11 +79,12 @@ class WebSocketService {
       message = JSON.stringify(message);
     }
 
+    console.log("Sending message to WebSocket:", message);
     this.socket.send(message);
   }
 
-  // Execute a query via WebSocket
   async executeQuery(query, streamId = crypto.randomUUID()) {
+    console.log("Executing query via WebSocket:", query);
     await this.send({
       type: "query",
       query: query,

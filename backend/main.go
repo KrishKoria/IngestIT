@@ -22,7 +22,6 @@ type ClickHouseConfig struct {
 
 func main() {
 
-    // Initialize Gin router with CORS middleware
     router := gin.Default()
     router.Use(cors.Default())
 
@@ -41,14 +40,12 @@ func main() {
 		defer conn.Close()
 	
 		for {
-			// Read message from client
 			messageType, message, err := conn.ReadMessage()
 			if err != nil {
 				fmt.Println("Error reading message:", err)
 				break
 			}
 	
-			// Echo message back to client
 			if err := conn.WriteMessage(messageType, message); err != nil {
 				fmt.Println("Error writing message:", err)
 				break
@@ -56,7 +53,6 @@ func main() {
 		}
 	})
 
-    // Health check endpoint
     router.GET("/health", func(c *gin.Context) {
         c.JSON(http.StatusOK, gin.H{
             "status":  "healthy",
@@ -74,7 +70,6 @@ func main() {
 	
 		fmt.Printf("Received connection parameters: %+v\n", config)
 	
-		// Attempt to connect to ClickHouse with the provided parameters
 		conn, err := connectToClickHouse(&config)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Connection failed: %v", err)})
@@ -82,7 +77,6 @@ func main() {
 		}
 		defer conn.Close()
 	
-		// Fetch available tables as a test of the connection
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 	
@@ -106,70 +100,112 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"tables": tables})
 	})
 
-    // API endpoint for executing queries (non-streaming)
     router.POST("/api/query", func(c *gin.Context) {
-        var queryRequest struct {
-            Query    string          `json:"query" binding:"required"`
-            Database ClickHouseConfig `json:"database"`
-        }
-
-        if err := c.ShouldBindJSON(&queryRequest); err != nil {
-            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
-            return
-        }
-
-        // Connect to ClickHouse with provided parameters
-        conn, err := connectToClickHouse(&queryRequest.Database)
-        if err != nil {
-            c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Connection failed: %v", err)})
-            return
-        }
-        defer conn.Close()
-
-        // Execute query with context
-        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-        defer cancel()
-
-        rows, err := conn.Query(ctx, queryRequest.Query)
-        if err != nil {
-            c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Query execution failed: %v", err)})
-            return
-        }
-        defer rows.Close()
-
-        // Process results
-        results, err := processQueryResults(rows)
-        if err != nil {
-            c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Processing results failed: %v", err)})
-            return
-        }
-
-        c.JSON(http.StatusOK, results)
-    })
+		var queryRequest struct {
+			Query    string          `json:"query" binding:"required"`
+			Database ClickHouseConfig `json:"database"`
+			Limit    int             `json:"limit"`
+			Offset   int             `json:"offset"`
+		}
+	
+		if err := c.ShouldBindJSON(&queryRequest); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+			return
+		}
+	
+		conn, err := connectToClickHouse(&queryRequest.Database)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Connection failed: %v", err)})
+			return
+		}
+		defer conn.Close()
+	
+		query := fmt.Sprintf("%s LIMIT %d OFFSET %d", queryRequest.Query, queryRequest.Limit, queryRequest.Offset)
+		rows, err := conn.Query(context.Background(), query)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Query execution failed: %v", err)})
+			return
+		}
+		defer rows.Close()
+	
+		results, err := processQueryResults(rows)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Processing results failed: %v", err)})
+			return
+		}
+	
+		c.JSON(http.StatusOK, results)
+	})
+	router.POST("/api/columns", func(c *gin.Context) {
+		var request struct {
+			Table    string `json:"table" binding:"required"`
+			Database string `json:"database" binding:"required"`
+			Host     string `json:"host" binding:"required"`
+			Port     int    `json:"port" binding:"required"`
+			Username string `json:"username" binding:"required"`
+			Password string `json:"password" binding:"required"`
+		}
+	
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+			return
+		}
+	
+		config := ClickHouseConfig{
+			Host:     request.Host,
+			Port:     request.Port,
+			Database: request.Database,
+			User:     request.Username,
+			JWTToken: request.Password,
+		}
+	
+		conn, err := connectToClickHouse(&config)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Connection failed: %v", err)})
+			return
+		}
+		defer conn.Close()
+	
+		query := fmt.Sprintf("DESCRIBE TABLE %s", request.Table)
+		rows, err := conn.Query(context.Background(), query)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to fetch columns: %v", err)})
+			return
+		}
+		defer rows.Close()
+	
+		var columns []string
+		for rows.Next() {
+			var columnName string
+			var columnType string
+			var defaultType, defaultExpression, comment, codecExpression, ttlExpression string // placeholders for unused columns
+			if err := rows.Scan(&columnName, &columnType, &defaultType, &defaultExpression, &comment, &codecExpression, &ttlExpression); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to read column name: %v", err)})
+				return
+			}
+			columns = append(columns, columnName)
+		}
+	
+		c.JSON(http.StatusOK, gin.H{"columns": columns})
+	})
     if err := router.Run(":8080" ); err != nil {
         fmt.Printf("Error running router: %s\n", err)
     }
 }
 
-// processQueryResults converts ClickHouse query results to JSON-friendly format
 func processQueryResults(rows driver.Rows) (map[string]interface{}, error) {
-	// Get column information
 	columnNames := rows.Columns()
 	numColumns := len(columnNames)
 
-	// Prepare result structure
 	result := map[string]interface{}{
 		"columns": columnNames,
 		"rows":    [][]interface{}{},
 	}
 
-	// Collect rows
 	var data [][]interface{}
 	for rows.Next() {
-		// Create a slice to hold our row values
 		rowPtrs := make([]interface{}, numColumns)
 
-		// Create pointers for each type based on column info
 		for i := 0; i < numColumns; i++ {
 			columnTypes := rows.ColumnTypes()
 			switch columnTypes[i].DatabaseTypeName() {
@@ -209,12 +245,10 @@ func processQueryResults(rows driver.Rows) (map[string]interface{}, error) {
 			}
 		}
 
-		// Scan the row into pointers
 		if err := rows.Scan(rowPtrs...); err != nil {
 			return nil, fmt.Errorf("row scan error: %v", err)
 		}
 
-		// Extract values from pointers
 		rowValues := make([]interface{}, numColumns)
 		for i := 0; i < numColumns; i++ {
 			switch v := rowPtrs[i].(type) {
@@ -242,7 +276,6 @@ func processQueryResults(rows driver.Rows) (map[string]interface{}, error) {
 		data = append(data, rowValues)
 	}
 
-	// Check for errors after iteration
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("row iteration error: %v", err)
 	}
