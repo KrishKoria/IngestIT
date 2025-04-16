@@ -9,7 +9,6 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 )
 
 type ClickHouseConfig struct {
@@ -25,32 +24,24 @@ func main() {
     router := gin.Default()
     router.Use(cors.Default())
 
-	var upgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true 
-		},
-	}
-
 	router.GET("/ws", func(c *gin.Context) {
-		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+		var config ClickHouseConfig
+		if err := c.ShouldBindJSON(&config); err != nil {
+			fmt.Printf("Invalid connection parameters: %v\n", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid connection parameters"})
+			return
+		}
+	
+		fmt.Printf("Received connection parameters: %+v\n", config)
+	
+		conn, err := connectToClickHouse(&config)
 		if err != nil {
-			fmt.Println("Failed to upgrade to WebSocket:", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Connection failed: %v", err)})
 			return
 		}
 		defer conn.Close()
-	
-		for {
-			messageType, message, err := conn.ReadMessage()
-			if err != nil {
-				fmt.Println("Error reading message:", err)
-				break
-			}
-	
-			if err := conn.WriteMessage(messageType, message); err != nil {
-				fmt.Println("Error writing message:", err)
-				break
-			}
-		}
+		handler := WebSocketHandler(conn)
+		handler(c)	
 	})
 
     router.GET("/health", func(c *gin.Context) {

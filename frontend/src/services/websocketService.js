@@ -17,16 +17,28 @@ class WebSocketService {
 
     this.connectionPromise = new Promise((resolve, reject) => {
       try {
+        console.log(`Connecting to WebSocket at ${url}`);
         this.socket = new WebSocket(url);
+
+        // Set a connection timeout
+        const connectionTimeout = setTimeout(() => {
+          if (!this.isConnected) {
+            console.error("WebSocket connection timeout");
+            this.socket.close();
+            reject(new Error("Connection timeout"));
+          }
+        }, 5000); // 5 second timeout
 
         this.socket.onopen = () => {
           console.log("WebSocket connection established");
           this.isConnected = true;
           this.reconnectAttempts = 0;
+          clearTimeout(connectionTimeout);
           resolve(true);
         };
 
         this.socket.onmessage = (event) => {
+          console.log("WebSocket message received:", event.data);
           this.handleMessage(event.data);
         };
 
@@ -36,6 +48,7 @@ class WebSocketService {
           );
           this.isConnected = false;
           this.connectionPromise = null;
+          clearTimeout(connectionTimeout);
 
           // Attempt to reconnect if not a clean close
           if (
@@ -52,6 +65,7 @@ class WebSocketService {
 
         this.socket.onerror = (error) => {
           console.error("WebSocket error:", error);
+          clearTimeout(connectionTimeout);
           reject(error);
         };
       } catch (error) {
